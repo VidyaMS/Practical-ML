@@ -1,0 +1,295 @@
+---
+title: "Practical ML Course Project"
+author: "Vidya"
+date: "8 May 2018"
+output: html_document
+---
+
+```{r setup, include=FALSE}
+knitr::opts_chunk$set(echo = TRUE , warning = FALSE , message = FALSE , comment = NA)
+```
+
+# HAR(Human Activity Recognition) Data Analysis. 
+
+ Details of the HAR project is provided at :  http://web.archive.org/web/20161224072740/http:/groupware.les.inf.puc-rio.br/har.
+
+### Data Analysis Objective:
+
+ **We are provided with a fairly large training data set which consists of data collected from wearable device sensors such as Arm band sensors, Belt sensors , Glove sensors and Dumbbell sensors. The training data set has been classified to one of the five classes - A, B,C,D and E. The classes identify whether the  excercise has been performed correctly (classe A) or has been performed with error(classes B to E)**
+**Hence the goal is to apply appropriate machine learning algorithms to the data set so as to predict the class and to have the highest classification accuracy** 
+**Also , once we have the model in place , predict the classes for the 20 observations in the test data set.**
+
+*Further reference to the data is available at  :http://web.archive.org/web/20170519033209/http://groupware.les.inf.puc-rio.br:80/public/papers/2013.Velloso.QAR-WLE.pdf.*
+
+### **The steps followed in this excercise is :**
+
+1. Reading and exploring data.
+2. Data Cleansing.
+3. Split data for training and validation
+4. Data Preprocess.
+5. Data modelling , starting with less complex methods and keeping an eye for  improvement on accuracy.
+6. Predict class for test data set with the selected model. 
+
+```{r , echo = FALSE}
+
+library(tidyverse)
+library(here)
+library(caret)
+
+file <- here::here("pml-training.csv")
+
+har_data_train <- read.csv(file , stringsAsFactors = FALSE)
+
+file <- here::here("pml-testing.csv")
+har_data_test <- read.csv(file , stringsAsFactors = FALSE)
+har_data_test <- har_data_test[,-(1:6)]
+har_data_train <- har_data_train[,-(1:6)]
+## Removed X, user_name , raw_timestamp_part_1 , raw_timestamp_part_2 , cvtd_timestamp , new_window
+
+```
+### Large number of variables in the training data. 
+```{r}
+dim(har_data_train)
+```
+### Dimension of the test data.
+```{r}
+dim(har_data_test)
+```
+
+### Check for NA in training data 
+```{r}
+nrow(na.omit(har_data_train))
+```
+
+### Check for NA in test data 
+```{r}
+nrow(na.omit(har_data_test))
+
+```
+
+## Data Cleaning : Training Data  
+
+ It is observed that the training data has 19216 rows of NA values and all the test data rows seem to have some variables with  NA values . Hence we need to impute values for NA .
+
+ NA values can be imputed with preprocess function of caret and use methods such as knnImpute or medianImpute . But since test data does not have any rows which have no NA values, knnImpute and medianImpute methods are unable to provide the imputed values for NA in test data set. 
+
+ Hence modelling is tried with imputing NA with zero in the train as well as test data set.
+
+```{r , echo = TRUE}
+
+## Check for which columns have NA values 
+na_list <- apply(har_data_train , 2 , is.na)
+
+na_sum_list <- apply(na_list , 2 , sum)
+
+## Names of columns with NA 
+na_cols <- names(na_sum_list[na_sum_list > 0]) 
+
+## Names of columns that don't have NA
+no_na_cols <- names(na_sum_list[na_sum_list == 0]) 
+
+## Imputing NA with zero 
+
+temp <- data.frame(sapply(har_data_train[,na_cols] , function(x){ifelse(is.na(x), 0 , x)}))
+
+## Combine the imputed columns and those that don't have NA
+
+har_data_train1 <- cbind(temp , har_data_train[,no_na_cols])
+
+```
+
+ Some more cleansing of training data i.e  converting blanks and character values like '#DIV/0!' to zero numeric.
+
+```{r , echo =TRUE}
+## Impute blank character values and '#DIV/0!' to zero 
+
+x_class <- sapply(har_data_train1 , class)
+
+x_char <- x_class[x_class=="character"]
+
+x_intnum <- x_class[x_class =="numeric" | x_class =="integer" ]
+
+## We dont' need to convert 'classe' to numeric  
+x_char <- x_char[-34]
+
+temp1 <- data.frame(sapply(har_data_train1[,names(x_char)] , function(x){ifelse((x == "")|x == "#DIV/0!" , 0 , x)}))
+
+## Mass formatting of character class variables to numeric class. 
+temp2 <- as.data.frame(sapply(temp1 , as.numeric))
+
+## Cleansed training data is now ready for further processing. 
+har_data_train_final <- cbind(temp2 , har_data_train1[,names(x_intnum)] ,"classe" = har_data_train1$classe )
+
+```
+
+## Data Cleansing : Test data . 
+
+ We need to treat test data to  similar data cleansing as in training data , i.e impute NA values , ensure all  the predictors as numeric variables . 
+
+```{r , echo = TRUE}
+
+## Check for which columns have NA values 
+na_list_test <- apply(har_data_test , 2 , is.na)
+
+na_sum_list_test <- apply(na_list_test , 2 , sum)
+
+## Names of columns with NA 
+na_cols_test <- names(na_sum_list_test[na_sum_list_test > 0]) 
+
+## Names of columns that don't have NA
+no_na_cols_test <- names(na_sum_list_test[na_sum_list_test == 0]) 
+
+## Imputing NA with zero 
+temp <- data.frame(sapply(har_data_test[,na_cols_test] , function(x){ifelse(is.na(x), 0 , x)}))
+
+## Combine the imputed columns and those that don't have NA
+
+har_data_test1 <- cbind(temp , har_data_test[,no_na_cols_test])
+
+## Last column in the test data is the problem id . Exclude it from the test data .
+har_data_test_final <- har_data_test1[,-154]
+
+```
+
+ Next , Split  training data into two sub sets for model creation and model validation. This is done with createDataPartition function in caret. 
+
+```{r}
+
+set.seed(1212)
+inTrain <- createDataPartition(har_data_train_final$classe , p =0.75 , list = FALSE)
+
+training <- har_data_train_final[inTrain,]
+
+table(training$classe)
+
+testing <- har_data_train_final[-inTrain,]
+
+```
+
+### Pre Processing of Training data  :- 
+ Checking for variables in training data set that have nearzero variance.This is required as during  dimensionality reduction with principal component analysis, variables with very low variance are to be omitted.
+
+```{r , echo = TRUE , cache= TRUE}
+
+nzv <- nearZeroVar(training[,-154] , saveMetrics = TRUE)
+
+head(nzv)
+
+range(nzv$percentUnique)
+
+## How many variables have zero variance ?
+print(length(nzv[nzv$zeroVar == TRUE,]))
+
+nzv <- nearZeroVar(training)
+
+## Omit the nzv variables from training and testing subsets as well as final test data set.
+filtered_train <- training[,-nzv]
+
+filtered_test <- testing[,names(filtered_train)]
+
+filtered_har_data_test <- har_data_test_final[,names(filtered_train[,-54])]
+```
+
+### Variables as input for modelling :
+
+```{r}
+names(filtered_train)
+
+```
+
+### Dimensionality reduction - PCA on the training data as well as test data .
+
+```{r , cache=TRUE}
+
+set.seed(345)
+pca_train <- preProcess(filtered_train, method = "pca")
+
+pca_predicted <- predict(pca_train , filtered_train)
+
+pca_testing <- predict(pca_train , filtered_test)
+
+pca_har_data_test <- predict(pca_train , filtered_har_data_test)
+
+```
+
+## Performing classification with Decision Trees on the principal components.  
+
+```{r , eval = TRUE ,cache= TRUE}
+
+fitcontrol <- trainControl(method = "repeatedcv" , number = 5 , repeats = 5)
+
+pca_mod <- train(classe ~ . , data = pca_predicted , method = "rpart", trControl = fitcontrol)
+
+plot(pca_mod$finalModel , main ="Classification Tree for HAR data ")
+text(pca_mod$finalModel  , cex = 0.8 , all = TRUE , use.n = TRUE)
+
+## Classe C not predicted 
+
+class_predicted <- predict(pca_mod , pca_predicted)
+
+confusionMatrix(class_predicted , pca_predicted$classe)
+
+class_predicted_test <- predict(pca_mod , pca_testing)
+
+confusionMatrix(class_predicted_test , pca_testing$classe)
+
+
+```
+
+It can be seen that classe 'C'is not predicted and the test set accuracy is `r confusionMatrix(class_predicted_test , pca_testing$classe)$overall['Accuracy'] `.
+
+### Next , perform Bagged Tree modelling for accuracy improvement.   
+
+```{r , cache=TRUE }
+fitcontrol <- trainControl(method = "repeatedcv" , number = 5 , repeats = 5)
+
+accuracy <- numeric()
+pcomp <- c(5,10,20)
+
+pcomp <- c(pcomp , ncol(pca_predicted))
+for(i in pcomp){
+
+set.seed(123)
+
+bagtree_mod  <- train(classe ~ . , data = pca_predicted[, 1:i] , method = "treebag" , trControl = fitcontrol )
+
+bagtree_pred_train <- predict(bagtree_mod , pca_testing[,1:i])
+
+confusionMatrix(bagtree_pred_train , pca_testing$classe)
+
+
+accuracy[i] <- confusionMatrix(bagtree_pred_train , pca_testing$classe)$overall['Accuracy']
+
+}
+
+plot(pcomp , accuracy[pcomp] , main = " Bagged Tree Accuracy for the various principal components " , xlab = "No of principal components" , ylab = "Accuracy" , col = "red", type ="b" )
+
+```
+
+### Predict the Classes for the given test data which consists of 20 observations .  
+```{r , eval = TRUE, cache = TRUE}
+bagtree_pred_test <- predict(bagtree_mod , pca_har_data_test)
+
+bagtree_pred_test
+
+table(bagtree_pred_test)
+
+```
+
+
+###  Random forest
+
+Finally , evalute Random Forest for further improvement in accuracy. 
+
+```{r , eval = TRUE , cache= TRUE }
+forest_mod <- train(classe ~ . , data = pca_predicted[,1:20] , method = "rf")
+
+forest_mod
+
+forest_pred <- predict(forest_mod , pca_testing[,1:20] )
+
+confusionMatrix(forest_pred , pca_testing$classe)
+
+```
+
+Thus we see that the prediction Accuracy is increased by Random Forest method and is `r confusionMatrix(forest_pred , pca_testing$classe)$overall['Accuracy']`.
